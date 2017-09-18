@@ -1,0 +1,14 @@
+extends layout/main.pug
+
+block body
+  h1 회원 가입
+
+  form(action='/register', method='post')
+    input(type='hidden', name='_csrf', value=csrfToken)
+    label
+      span 사용자 이름
+      input(type='text', name='username')
+    label
+      span 비밀번호
+      input(type='text', name='password')
+    button(type='submit') 가입

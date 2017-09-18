@@ -1,0 +1,10 @@
+extends layout/main.pug
+
+block body
+  h1 index
+
+  p 현재 로그인 된 사용자 이름: #{req.user.username}
+
+  form(action='/logout', method='post')
+    input(type='hidden', name='_csrf', value=csrfToken)
+    button(type='submit') 로그아웃
