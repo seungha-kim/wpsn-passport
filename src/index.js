@@ -3,113 +3,108 @@ require('dotenv').config()
 const path = require('path')
 const express = require('express')
 const bodyParser = require('body-parser')
-const cookieSession = require('cookie-session')
-const csurf = require('csurf')
-const flash = require('connect-flash')
-const passport = require('passport')
-const LocalStrategy = require('passport-local').Strategy
+const jwt = require('jsonwebtoken')
+const expressJwt = require('express-jwt')
+const cors = require('cors')
 
-const util = require('./util')
 const query = require('./query')
-const mw = require('./middleware')
 
 const PORT = process.env.PORT || 3000
+const JWT_SECRET = process.env.JWT_SECRET
 
 const app = express()
+app.use(bodyParser.json())
+app.use(cors())
 
-app.set('view engine', 'pug')
-app.set('trust proxy')
+const sendError = res => err => {
+  res.status(400).send({
+    error: err.name,
+    message: err.message
+  })
+}
 
-app.use(express.static(path.join(__dirname, '..', 'public')))
-app.use(bodyParser.urlencoded({extended: false}))
-app.use(cookieSession({
-  name: 'wpsess',
-  keys: [
-    process.env.SECRET
-  ]
-}))
-app.use(flash())
-app.use(csurf())
-app.use(mw.insertReq)
-app.use(mw.insertToken)
-
-// passport 관련 미들웨어 삽입
-app.use(passport.initialize())
-app.use(passport.session())
-
-// passport가 유저 정보를 세션에 저장할 수 있도록 직렬화
-passport.serializeUser((user, done) => {
-  done(null, user.id)
-})
-
-// passport가 세션으로부터 유저 객체를 가져올 수 있도록 역직렬화
-passport.deserializeUser((id, done) => {
-  query.getUserById(id)
+app.post('/user', (req, res) => {
+  const {username, password} = req.body
+  query.createUser(username, password)
     .then(user => {
-      if (user) {
-        done(null, user) // req.user에 저장됨
-      } else {
-        done(new Error('해당 아이디를 가진 사용자가 없습니다.'))
-      }
-    })
-})
-
-// passport가 아이디와 암호 기반 인증을 수행하도록 strategy 등록
-passport.use(new LocalStrategy((username, password, done) => {
-  query.compareUser(username, password)
-    .then(user => {
-      // 인증 성공
-      done(null, user)
-    })
-    .catch(err => {
-      if (err instanceof query.LoginError) {
-        // 인증 실패: 사용자 책임
-        done(null, false, {message: err.message})
-      } else {
-        // 인증 실패: 서버 책임
-        done(err)
-      }
-    })
-}))
-
-app.get('/', mw.loginRequired, (req, res) => {
-  res.render('index.pug', req.user)
-})
-
-app.get('/login', (req, res) => {
-  res.render('login.pug')
-})
-
-// passport-local을 통해 생성한 라우트 핸들러
-app.post('/login', passport.authenticate(('local'), {
-  successRedirect: '/', // 인증 성공 시 리다이렉트시킬 경로
-  failureRedirect: '/login', // 인증 실패 시 리다이렉트시킬 경로
-  failureFlash: '아이디 혹은 패스워드가 잘못되었습니다.' // 인증 실패 시 표시할 메시지
-}))
-
-app.get('/register', (req, res) => {
-  res.render('register.pug')
-})
-
-app.post('/register', (req, res, next) => {
-  query.createUser(req.body.username, req.body.password)
-    .then(user => {
-      // passport가 제공하는 `req.login` 메소드
-      req.login(user, err => {
-        if (err) {
-          next(err)
-        } else {
-          res.redirect('/')
-        }
+      const token = jwt.sign({id: user.id}, JWT_SECRET)
+      res.send({
+        token
       })
     })
-    .catch(util.flashError(req, res))
+    .catch(sendError(res))
 })
 
-app.post('/logout', (req, res) => {
-  // passport가 제공하는 `req.logout` 메소드
-  req.logout()
-  res.redirect('/login')
+app.post('/login', (req, res) => {
+  const {username, password} = req.body
+  query.compareUser(username, password)
+    .then(user => {
+      const token = jwt.sign({id: user.id}, JWT_SECRET)
+      res.send({
+        token
+      })
+    })
+    .catch(sendError(res))
+})
+
+const authRouter = express.Router() // FIXME
+authRouter.use(expressJwt({secret: JWT_SECRET}))
+
+authRouter.get('/todos', (req, res) => {
+  query.getTodosByUserId(req.user.id)
+    .orderBy('id', 'desc')
+    .then(todos => {
+      res.send(todos)
+    })
+    .catch(sendError(res))
+})
+
+authRouter.post('/todos', (req, res) => {
+  const {title} = req.body
+  query.createTodo(req.user.id, title)
+    .then(([id]) => query.getTodosByUserId(id))
+    .then(todo => {
+      res.send(todo)
+    })
+    .catch(sendError(res))
+})
+
+authRouter.get('/todos/:id', (req, res, next) => {
+  query.getTodo(req.user.id, req.params.id)
+    .then(todo => {
+      if (todo) {
+        res.send(todo)
+      } else {
+        next()
+      }
+    })
+    .catch(sendError(res))
+})
+
+authRouter.patch('/todos/:id', (req, res) => {
+  query.updateTodo(
+    req.user.id,
+    req.params.id,
+    req.body.title,
+    req.body.complete
+  ).then(() => {
+    res.end()
+  }).catch(sendError(res))
+})
+
+authRouter.delete('/todos/:id', (req, res) => {
+  query.deleteTodo(
+    req.user.id,
+    req.params.id
+  ).then(() => {
+    res.end()
+  }).catch(sendError(res))
+})
+
+app.use(authRouter)
+
+app.use((req, res) => {
+  res.status(404).end()
 })
 
 app.listen(PORT, () => {
